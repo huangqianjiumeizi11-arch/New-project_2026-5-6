@@ -1,0 +1,26 @@
+﻿# Visual Studio local files
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Build intermediates
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
+*.log
+
+# Keep playable MonsterDodge release assets
+!MonsterDodge/Release/
+!MonsterDodge/Release/MonsterDodge.exe
+!MonsterDodge/Release/bgm.mp3
