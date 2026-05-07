@@ -9,19 +9,32 @@ MusicManager musicManager;
 GameState state = GameState::Menu;
 GameState previousState = GameState::Menu;
 int currentLevel = 1;
-int defeatedCount = 0;
 int selectedUpgrade = 0;
-int score = 0;
-int combo = 0;
-int comboTimer = 0;
 bool mouseDownLast = false;
 bool returnToStartMenuRequested = false;
+GameDifficulty gameDifficulty = GameDifficulty::Easy;
 
 std::vector<RectF> walls;
 std::vector<Monster> monsters;
 std::vector<Supply> supplies;
 std::vector<Bullet> bullets;
 std::vector<Slash> slashes;
+
+constexpr float MAX_SKILL_ENERGY = 100.0f;
+constexpr int SUPPLY_RECOVERY = 20;
+constexpr int MONSTER_DAMAGE = 10;
+constexpr int BOSS_DAMAGE = 20;
+constexpr int PLAYER_SHOOT_COOLDOWN_MIN = 30;
+constexpr int PLAYER_SHOOT_COOLDOWN_RANGE = 11;
+constexpr int UPGRADED_PLAYER_SHOOT_COOLDOWN_MIN = 10;
+constexpr int UPGRADED_PLAYER_SHOOT_COOLDOWN_RANGE = 6;
+constexpr float PLAYER_BULLET_SPEED = 7.0f;
+constexpr float PLAYER_BULLET_DAMAGE = 0.5f;
+constexpr float UPGRADED_PLAYER_BULLET_DAMAGE = 1.0f;
+constexpr float SHOOTER_BULLET_SPEED = 2.0f;
+constexpr int PATH_CELL = 32;
+constexpr int PATH_COLS = SCREEN_W / PATH_CELL;
+constexpr int PATH_ROWS = SCREEN_H / PATH_CELL;
 
 float dist(Vec2 a, Vec2 b) {
     float dx = a.x - b.x;
@@ -66,16 +79,216 @@ void moveWithCollision(Vec2& pos, float radius, Vec2 delta) {
     if (!blocked(nextY, radius)) pos.y = nextY.y;
 }
 
+Vec2 rotate(Vec2 v, float degrees) {
+    float radians = degrees * PI / 180.0f;
+    float c = cosf(radians);
+    float s = sinf(radians);
+    return { v.x * c - v.y * s, v.x * s + v.y * c };
+}
+
+bool monsterStepClear(Vec2 pos, float radius, Vec2 dir, float speed) {
+    float bufferRadius = radius + 8.0f;
+    float lookAhead = std::max(speed + 8.0f, 12.0f);
+    return !blocked({ pos.x + dir.x * lookAhead, pos.y + dir.y * lookAhead }, bufferRadius);
+}
+
+RectF expandedRect(RectF rect, float amount) {
+    return { rect.x - amount, rect.y - amount, rect.w + amount * 2.0f, rect.h + amount * 2.0f };
+}
+
+bool segmentHitsRect(Vec2 from, Vec2 to, RectF rect) {
+    float length = dist(from, to);
+    int steps = std::max(1, (int)(length / 8.0f));
+    for (int i = 0; i <= steps; ++i) {
+        float t = (float)i / (float)steps;
+        Vec2 p{ from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t };
+        if (pointInRect(p, rect)) return true;
+    }
+    return false;
+}
+
+const RectF* findBlockingWall(Vec2 from, Vec2 to, float radius) {
+    const RectF* bestWall = nullptr;
+    float bestDistance = 999999.0f;
+    float expand = radius + 6.0f;
+
+    for (const auto& wall : walls) {
+        RectF expanded = expandedRect(wall, expand);
+        if (!segmentHitsRect(from, to, expanded)) continue;
+
+        Vec2 center{ wall.x + wall.w * 0.5f, wall.y + wall.h * 0.5f };
+        float d = dist(from, center);
+        if (d < bestDistance) {
+            bestDistance = d;
+            bestWall = &wall;
+        }
+    }
+    return bestWall;
+}
+
+bool hasLineOfSight(Vec2 from, Vec2 to, float radius) {
+    return findBlockingWall(from, to, radius) == nullptr;
+}
+
+int clampInt(int value, int minValue, int maxValue) {
+    return std::max(minValue, std::min(maxValue, value));
+}
+
+int gridIndex(int col, int row) {
+    return row * PATH_COLS + col;
+}
+
+Vec2 gridCenter(int col, int row) {
+    return { col * (float)PATH_CELL + PATH_CELL * 0.5f, row * (float)PATH_CELL + PATH_CELL * 0.5f };
+}
+
+int gridCol(float x) {
+    return clampInt((int)(x / PATH_CELL), 0, PATH_COLS - 1);
+}
+
+int gridRow(float y) {
+    return clampInt((int)(y / PATH_CELL), 0, PATH_ROWS - 1);
+}
+
+bool pathCellBlocked(int col, int row, float radius) {
+    return blocked(gridCenter(col, row), radius + 6.0f);
+}
+
+bool findNearestOpenCell(Vec2 pos, float radius, int& outCol, int& outRow) {
+    int baseCol = gridCol(pos.x);
+    int baseRow = gridRow(pos.y);
+    float bestDistance = 999999.0f;
+    bool found = false;
+
+    for (int range = 0; range < std::max(PATH_COLS, PATH_ROWS); ++range) {
+        for (int row = baseRow - range; row <= baseRow + range; ++row) {
+            for (int col = baseCol - range; col <= baseCol + range; ++col) {
+                if (col < 0 || col >= PATH_COLS || row < 0 || row >= PATH_ROWS) continue;
+                if (pathCellBlocked(col, row, radius)) continue;
+
+                float d = dist(pos, gridCenter(col, row));
+                if (d < bestDistance) {
+                    bestDistance = d;
+                    outCol = col;
+                    outRow = row;
+                    found = true;
+                }
+            }
+        }
+        if (found) return true;
+    }
+    return false;
+}
+
+Vec2 chooseMonsterPathTarget(Vec2 pos, float radius, Vec2 target) {
+    const RectF* blockingWall = findBlockingWall(pos, target, radius);
+    if (blockingWall == nullptr) return target;
+
+    int startCol = 0;
+    int startRow = 0;
+    int goalCol = 0;
+    int goalRow = 0;
+    if (!findNearestOpenCell(pos, radius, startCol, startRow)) return target;
+    if (!findNearestOpenCell(target, radius, goalCol, goalRow)) return target;
+
+    int start = gridIndex(startCol, startRow);
+    int goal = gridIndex(goalCol, goalRow);
+    if (start == goal) return target;
+
+    const int total = PATH_COLS * PATH_ROWS;
+    std::vector<int> cameFrom(total, -1);
+    std::vector<int> queue;
+    queue.reserve(total);
+    queue.push_back(start);
+    cameFrom[start] = start;
+
+    const int dc[] = { 1, -1, 0, 0 };
+    const int dr[] = { 0, 0, 1, -1 };
+    for (int head = 0; head < (int)queue.size(); ++head) {
+        int current = queue[head];
+        if (current == goal) break;
+
+        int col = current % PATH_COLS;
+        int row = current / PATH_COLS;
+        for (int i = 0; i < 4; ++i) {
+            int nextCol = col + dc[i];
+            int nextRow = row + dr[i];
+            if (nextCol < 0 || nextCol >= PATH_COLS || nextRow < 0 || nextRow >= PATH_ROWS) continue;
+            if (pathCellBlocked(nextCol, nextRow, radius)) continue;
+
+            int next = gridIndex(nextCol, nextRow);
+            if (cameFrom[next] != -1) continue;
+            cameFrom[next] = current;
+            queue.push_back(next);
+        }
+    }
+
+    if (cameFrom[goal] == -1) return target;
+
+    int next = goal;
+    while (cameFrom[next] != start && cameFrom[next] != next) {
+        next = cameFrom[next];
+    }
+
+    int nextCol = next % PATH_COLS;
+    int nextRow = next / PATH_COLS;
+    return gridCenter(nextCol, nextRow);
+}
+
+void moveMonsterAvoidingWalls(Vec2& pos, float radius, Vec2 desiredDir, float speed) {
+    desiredDir = normalize(desiredDir);
+    if (speed <= 0 || (desiredDir.x == 0 && desiredDir.y == 0)) return;
+
+    const float angles[] = {
+        0.0f, -25.0f, 25.0f, -45.0f, 45.0f, -70.0f, 70.0f,
+        -90.0f, 90.0f, -120.0f, 120.0f, -150.0f, 150.0f, 180.0f
+    };
+    Vec2 bestDir = desiredDir;
+    float bestScore = -999.0f;
+
+    for (float angle : angles) {
+        Vec2 candidate = normalize(rotate(desiredDir, angle));
+        Vec2 next{ pos.x + candidate.x * speed, pos.y + candidate.y * speed };
+        if (blocked(next, radius)) continue;
+
+        bool hasLookAheadClearance = monsterStepClear(pos, radius, candidate, speed);
+        float clearanceScore = hasLookAheadClearance ? 0.45f : -0.35f;
+        float wallHugPenalty = blocked(next, radius + 4.0f) ? -0.45f : 0.0f;
+        float score = dot(candidate, desiredDir) + clearanceScore + wallHugPenalty;
+        if (score > bestScore) {
+            bestScore = score;
+            bestDir = candidate;
+        }
+    }
+
+    if (bestScore < -100.0f) {
+        bestDir = desiredDir;
+    }
+
+    moveWithCollision(pos, radius, { bestDir.x * speed, bestDir.y * speed });
+}
+
 void resetPlayer() {
     player = Player();
 }
 
-void addSupply(int type, float x, float y) {
-    supplies.push_back(Supply{ type, { x, y }, 12, true });
+void addSupply(float x, float y) {
+    supplies.push_back(Supply{ { x, y }, 12, true });
 }
 
 float randFloat(float minValue, float maxValue) {
     return minValue + (maxValue - minValue) * ((float)rand() / (float)RAND_MAX);
+}
+
+float playerShootCooldown() {
+    if (player.bulletUpgraded) {
+        return (float)(UPGRADED_PLAYER_SHOOT_COOLDOWN_MIN + rand() % UPGRADED_PLAYER_SHOOT_COOLDOWN_RANGE);
+    }
+    return (float)(PLAYER_SHOOT_COOLDOWN_MIN + rand() % PLAYER_SHOOT_COOLDOWN_RANGE);
+}
+
+float playerBulletDamage() {
+    return player.bulletUpgraded ? UPGRADED_PLAYER_BULLET_DAMAGE : PLAYER_BULLET_DAMAGE;
 }
 
 bool supplyPositionClear(Vec2 pos, float radius) {
@@ -106,20 +319,46 @@ Vec2 randomOpenPosition(float radius) {
     return { 90, 560 };
 }
 
-void addRandomSupply(int type) {
+void addRandomSupply() {
     Vec2 pos = randomOpenPosition(12.0f);
-    addSupply(type, pos.x, pos.y);
+    addSupply(pos.x, pos.y);
 }
 
-void addMonster(MonsterType type, float x, float y, int hp, float speed) {
+void addLevelSupplies(int level) {
+    if (gameDifficulty == GameDifficulty::Easy) {
+        int count = (level == 1) ? 2 : 1;
+        for (int i = 0; i < count; ++i) {
+            addRandomSupply();
+        }
+    }
+    else if (level <= 2) {
+        addRandomSupply();
+    }
+}
+
+void addMonster(MonsterType type, float x, float y, float hp, float speed) {
     Monster m;
     m.type = type;
     m.pos = { x, y };
     m.maxHp = hp;
     m.hp = hp;
     m.speed = speed;
+    m.touchDamage = (type == MonsterType::Boss) ? BOSS_DAMAGE : MONSTER_DAMAGE;
     if (type == MonsterType::Boss) m.radius = 26.0f;
     else m.radius = (type == MonsterType::Shooter) ? 16.0f : 15.0f;
+    m.shootCooldown = (float)(60 + rand() % 60);
+    monsters.push_back(m);
+}
+
+void addHardLevel3Chaser(float x, float y, float speed) {
+    Monster m;
+    m.type = MonsterType::Chaser;
+    m.pos = { x, y };
+    m.maxHp = 1.5f;
+    m.hp = 1.5f;
+    m.speed = speed;
+    m.touchDamage = 100;
+    m.radius = 15.0f;
     m.shootCooldown = (float)(60 + rand() % 60);
     monsters.push_back(m);
 }
@@ -131,13 +370,12 @@ void loadLevel(int level) {
     supplies.clear();
     bullets.clear();
     slashes.clear();
-    defeatedCount = 0;
     selectedUpgrade = 0;
 
     player.pos = { 90, 90 };
-    player.hp = std::min(player.hp + 2, player.maxHp);
-    player.dashEnergy = 100;
+    player.skillEnergy = MAX_SKILL_ENERGY;
     player.attackCooldown = 0;
+    player.shootCooldown = 0;
     player.hurtCooldown = 0;
     player.dashInvincible = 0;
 
@@ -145,11 +383,11 @@ void loadLevel(int level) {
         walls.push_back({ 280, 120, 80, 260 });
         walls.push_back({ 560, 250, 90, 240 });
         walls.push_back({ 410, 500, 180, 40 });
-        addMonster(MonsterType::Chaser, 760, 130, 2, 1.15f);
-        addMonster(MonsterType::Chaser, 780, 470, 2, 1.20f);
-        addMonster(MonsterType::Chaser, 470, 330, 2, 1.10f);
-        addRandomSupply(0);
-        addRandomSupply(1);
+        addMonster(MonsterType::Chaser, 760, 130, 2, 1.40f);
+        addMonster(MonsterType::Chaser, 780, 470, 2, 1.45f);
+        addMonster(MonsterType::Chaser, 470, 330, 2, 1.35f);
+        addMonster(MonsterType::Shooter, 700, 315, 2, 0.95f);
+        addLevelSupplies(level);
     }
     else if (level == 2) {
         walls.push_back({ 190, 180, 140, 55 });
@@ -157,12 +395,13 @@ void loadLevel(int level) {
         walls.push_back({ 460, 100, 60, 210 });
         walls.push_back({ 460, 360, 60, 210 });
         walls.push_back({ 690, 225, 110, 170 });
-        addMonster(MonsterType::Chaser, 785, 95, 3, 1.30f);
-        addMonster(MonsterType::Chaser, 820, 525, 3, 1.35f);
-        addMonster(MonsterType::Chaser, 550, 310, 3, 1.25f);
-        addMonster(MonsterType::Shooter, 650, 310, 2, 0.75f);
-        addRandomSupply(0);
-        addRandomSupply(1);
+        addMonster(MonsterType::Chaser, 785, 95, 3, 1.55f);
+        addMonster(MonsterType::Chaser, 820, 525, 3, 1.60f);
+        addMonster(MonsterType::Chaser, 550, 310, 3, 1.50f);
+        addMonster(MonsterType::Shooter, 650, 310, 2, 0.98f);
+        addMonster(MonsterType::Shooter, 820, 210, 2, 0.98f);
+        addMonster(MonsterType::Shooter, 820, 430, 2, 0.98f);
+        addLevelSupplies(level);
     }
     else {
         walls.push_back({ 150, 125, 70, 390 });
@@ -170,22 +409,26 @@ void loadLevel(int level) {
         walls.push_back({ 355, 490, 250, 55 });
         walls.push_back({ 730, 125, 70, 390 });
         walls.push_back({ 420, 250, 110, 130 });
-        addMonster(MonsterType::Chaser, 825, 100, 4, 1.45f);
-        addMonster(MonsterType::Chaser, 835, 535, 4, 1.45f);
-        addMonster(MonsterType::Chaser, 280, 520, 4, 1.40f);
-        addMonster(MonsterType::Shooter, 700, 320, 3, 0.85f);
-        addMonster(MonsterType::Shooter, 300, 120, 3, 0.85f);
+        if (gameDifficulty == GameDifficulty::Hard) {
+            addHardLevel3Chaser(825, 100, 1.70f);
+            addHardLevel3Chaser(835, 535, 1.70f);
+            addHardLevel3Chaser(280, 520, 1.65f);
+        }
+        else {
+            addMonster(MonsterType::Chaser, 825, 100, 4, 1.70f);
+            addMonster(MonsterType::Chaser, 835, 535, 4, 1.70f);
+            addMonster(MonsterType::Chaser, 280, 520, 4, 1.65f);
+        }
+        addMonster(MonsterType::Shooter, 700, 320, 3, 1.05f);
+        addMonster(MonsterType::Shooter, 300, 120, 3, 1.05f);
+        addMonster(MonsterType::Shooter, 300, 520, 3, 1.05f);
         addMonster(MonsterType::Boss, 830, 320, 10, 0.80f);
-        addRandomSupply(0);
-        addRandomSupply(1);
+        addLevelSupplies(level);
     }
 }
 
 void startGame() {
     resetPlayer();
-    score = 0;
-    combo = 0;
-    comboTimer = 0;
     player.level = 1;
     loadLevel(1);
     state = GameState::Playing;
@@ -222,7 +465,7 @@ void drawWorld() {
 
     for (const auto& s : supplies) {
         if (!s.alive) continue;
-        setfillcolor(s.type == 0 ? RGB(226, 85, 85) : RGB(242, 196, 76));
+        setfillcolor(RGB(226, 85, 85));
         solidcircle((int)s.pos.x, (int)s.pos.y, (int)s.radius);
         setlinecolor(RGB(255, 255, 255));
         circle((int)s.pos.x, (int)s.pos.y, (int)s.radius);
@@ -230,7 +473,7 @@ void drawWorld() {
 
     for (const auto& b : bullets) {
         if (!b.alive) continue;
-        setfillcolor(RGB(169, 103, 235));
+        setfillcolor(b.fromPlayer ? RGB(97, 202, 255) : RGB(169, 103, 235));
         solidcircle((int)b.pos.x, (int)b.pos.y, (int)b.radius);
     }
 
@@ -276,20 +519,23 @@ void drawWorld() {
     line((int)player.pos.x, (int)player.pos.y, (int)(player.pos.x + aim.x * 28), (int)(player.pos.y + aim.y * 28));
 
     drawBar(18, 16, 180, 14, (float)player.hp, (float)player.maxHp, RGB(222, 78, 78));
-    drawBar(18, 38, 180, 10, player.dashEnergy, 100, RGB(238, 190, 65));
+    drawBar(18, 38, 180, 10, player.skillEnergy, MAX_SKILL_ENERGY, RGB(238, 190, 65));
 
     settextstyle(20, 0, L"Microsoft YaHei");
     settextcolor(RGB(230, 236, 240));
     setbkmode(TRANSPARENT);
     wchar_t info[128];
-    swprintf_s(info, L"关卡 %d / 3    等级 %d    攻击 %d    剩余怪物 %d    分数 %d", currentLevel, player.level, player.attack, (int)monsters.size(), score);
+    swprintf_s(info, L"关卡 %d / 3    等级 %d    攻击 %d    剩余怪物 %d", currentLevel, player.level, player.attack, (int)monsters.size());
     outtextxy(220, 16, info);
-    if (combo > 1 && comboTimer > 0) {
-        wchar_t comboInfo[64];
-        swprintf_s(comboInfo, L"连击 x%d", combo);
-        settextcolor(RGB(255, 213, 92));
-        outtextxy(220, 42, comboInfo);
-    }
+
+    settextstyle(14, 0, L"Microsoft YaHei");
+    settextcolor(RGB(230, 236, 240));
+    wchar_t hpInfo[64];
+    swprintf_s(hpInfo, L"血量 %d / %d", player.hp, player.maxHp);
+    outtextxy(20, 17, hpInfo);
+    wchar_t skillInfo[64];
+    swprintf_s(skillInfo, L"技力 %.0f / %.0f", player.skillEnergy, MAX_SKILL_ENERGY);
+    outtextxy(20, 33, skillInfo);
 }
 
 void drawMenu() {
@@ -298,7 +544,7 @@ void drawMenu() {
     drawCenteredText(140, L"MonsterDodge", 52, RGB(236, 241, 245));
     drawCenteredText(205, L"闪避、拉扯、反击，活过三关", 24, RGB(103, 211, 151));
     drawCenteredText(250, L"WASD 移动，鼠标瞄准，左键攻击，空格冲刺", 22, RGB(197, 207, 215));
-    drawCenteredText(290, L"清空怪物后选择升级，第三关会出现 Boss", 22, RGB(197, 207, 215));
+    drawCenteredText(290, L"前两关清空怪物后选择升级，第三关会出现 Boss", 22, RGB(197, 207, 215));
     drawCenteredText(365, L"按 Enter 开始", 28, RGB(103, 211, 151));
 }
 
@@ -371,12 +617,14 @@ void drawMainMenu(POINT mouse) {
 }
 
 void drawSettingsMenu(POINT mouse) {
-    drawStartBackground(L"游戏设置", L"调整背景音乐后返回主菜单或直接开始");
-    RectF toggleButton{ 330, 230, 300, 46 };
-    RectF minusButton{ 315, 326, 54, 44 };
-    RectF plusButton{ 591, 326, 54, 44 };
-    RectF backButton{ 315, 448, 150, 46 };
-    RectF startButton{ 495, 448, 150, 46 };
+    drawStartBackground(L"游戏设置", L"调整背景音乐、音量和难度");
+    RectF toggleButton{ 330, 212, 300, 46 };
+    RectF minusButton{ 315, 296, 54, 44 };
+    RectF plusButton{ 591, 296, 54, 44 };
+    RectF easyButton{ 315, 392, 150, 46 };
+    RectF hardButton{ 495, 392, 150, 46 };
+    RectF backButton{ 315, 494, 150, 46 };
+    RectF startButton{ 495, 494, 150, 46 };
 
     wchar_t musicLine[64];
     swprintf_s(musicLine, L"背景音乐：%s", musicManager.IsEnabled() ? L"开启" : L"关闭");
@@ -384,22 +632,25 @@ void drawSettingsMenu(POINT mouse) {
 
     wchar_t volumeLine[64];
     swprintf_s(volumeLine, L"音量：%d", musicManager.GetVolume());
-    drawCenteredText(298, volumeLine, 22, RGB(230, 236, 240));
+    drawCenteredText(268, volumeLine, 22, RGB(230, 236, 240));
     drawMenuButton(minusButton, L"-", mouseInRect(mouse, minusButton));
-    drawBar(385, 340, 190, 16, (float)musicManager.GetVolume(), 100, RGB(103, 211, 151));
+    drawBar(385, 310, 190, 16, (float)musicManager.GetVolume(), 100, RGB(103, 211, 151));
     drawMenuButton(plusButton, L"+", mouseInRect(mouse, plusButton));
 
+    drawCenteredText(362, L"难度", 22, RGB(230, 236, 240));
+    drawMenuButton(easyButton, gameDifficulty == GameDifficulty::Easy ? L"简单：当前" : L"简单模式", mouseInRect(mouse, easyButton));
+    drawMenuButton(hardButton, gameDifficulty == GameDifficulty::Hard ? L"困难：当前" : L"困难模式", mouseInRect(mouse, hardButton));
+
     if (musicManager.IsOpened()) {
-        drawCenteredText(390, L"音乐文件已加载", 16, RGB(160, 220, 185));
+        drawCenteredText(560, L"音乐文件已加载", 16, RGB(160, 220, 185));
     }
     else if (!musicManager.GetLastError().empty()) {
         std::wstring errorLine = L"音乐加载失败：" + musicManager.GetLastError();
-        drawCenteredText(390, errorLine.c_str(), 16, RGB(235, 125, 116));
+        drawCenteredText(560, errorLine.c_str(), 16, RGB(235, 125, 116));
     }
 
     drawMenuButton(backButton, L"返回主菜单", mouseInRect(mouse, backButton));
     drawMenuButton(startButton, L"开始游戏", mouseInRect(mouse, startButton));
-    drawCenteredText(528, L"也可以用 ↑ / ↓ 调整音量，点击背景音乐按钮开关音乐", 16, RGB(160, 172, 181));
 }
 
 void drawControlsMenu(POINT mouse) {
@@ -411,12 +662,13 @@ void drawControlsMenu(POINT mouse) {
     const wchar_t* lines[] = {
         L"WASD：移动",
         L"鼠标移动：瞄准",
-        L"鼠标左键：攻击",
+        L"鼠标左键：近战攻击",
+        L"鼠标右键：发射子弹",
         L"Space：冲刺 / 短暂无敌",
         L"Esc：游戏中打开暂停菜单",
         L"R：失败或胜利后重新开始"
     };
-    for (int i = 0; i < 6; ++i) outtextxy(330, 235 + i * 38, lines[i]);
+    for (int i = 0; i < 7; ++i) outtextxy(330, 225 + i * 35, lines[i]);
 
     RectF backButton{ 405, 500, 150, 46 };
     drawMenuButton(backButton, L"返回主菜单", mouseInRect(mouse, backButton));
@@ -447,11 +699,13 @@ bool ShowStartMenu() {
             drawMainMenu(mouse);
         }
         else if (screen == StartMenuScreen::Settings) {
-            RectF toggleButton{ 330, 230, 300, 46 };
-            RectF minusButton{ 315, 326, 54, 44 };
-            RectF plusButton{ 591, 326, 54, 44 };
-            RectF backButton{ 315, 448, 150, 46 };
-            RectF startButton{ 495, 448, 150, 46 };
+            RectF toggleButton{ 330, 212, 300, 46 };
+            RectF minusButton{ 315, 296, 54, 44 };
+            RectF plusButton{ 591, 296, 54, 44 };
+            RectF easyButton{ 315, 392, 150, 46 };
+            RectF hardButton{ 495, 392, 150, 46 };
+            RectF backButton{ 315, 494, 150, 46 };
+            RectF startButton{ 495, 494, 150, 46 };
 
             if (GetAsyncKeyState(VK_UP) & 0x0001) musicManager.SetVolume(musicManager.GetVolume() + 5);
             if (GetAsyncKeyState(VK_DOWN) & 0x0001) musicManager.SetVolume(musicManager.GetVolume() - 5);
@@ -460,6 +714,8 @@ bool ShowStartMenu() {
                 if (mouseInRect(mouse, toggleButton)) musicManager.SetEnabled(!musicManager.IsEnabled());
                 else if (mouseInRect(mouse, minusButton)) musicManager.SetVolume(musicManager.GetVolume() - 5);
                 else if (mouseInRect(mouse, plusButton)) musicManager.SetVolume(musicManager.GetVolume() + 5);
+                else if (mouseInRect(mouse, easyButton)) gameDifficulty = GameDifficulty::Easy;
+                else if (mouseInRect(mouse, hardButton)) gameDifficulty = GameDifficulty::Hard;
                 else if (mouseInRect(mouse, backButton)) screen = StartMenuScreen::MainMenu;
                 else if (mouseInRect(mouse, startButton)) return true;
             }
@@ -515,27 +771,32 @@ void updatePauseMenu() {
 
 void drawUpgrade() {
     drawWorld();
-    drawOverlay(L"关卡完成", L"选择一项升级：1 生命  2 攻击  3 速度");
+    drawOverlay(L"关卡完成", currentLevel == 2 ? L"选择一项升级：1 攻击  2 速度  3 子弹" : L"选择一项升级：1 攻击  2 速度");
     settextstyle(20, 0, L"Microsoft YaHei");
     settextcolor(RGB(215, 224, 230));
-    outtextxy(365, 360, L"1. 最大生命 +2，并恢复");
-    outtextxy(365, 390, L"2. 攻击力 +1");
-    outtextxy(365, 420, L"3. 移动速度 +8%");
+    outtextxy(365, 370, L"1. 攻击力 +1");
+    outtextxy(365, 405, L"2. 移动速度 +8%");
+    if (currentLevel == 2) {
+        outtextxy(365, 440, L"3. 子弹伤害 1，间隔 10-15 帧");
+    }
 }
 
 void applyUpgrade(int choice) {
     if (choice == 1) {
-        player.maxHp += 2;
-        player.hp = player.maxHp;
-    }
-    else if (choice == 2) {
         player.attack += 1;
     }
-    else if (choice == 3) {
+    else if (choice == 2) {
         player.speed *= 1.08f;
+    }
+    else if (choice == 3 && currentLevel == 2) {
+        player.bulletUpgraded = true;
+        player.shootCooldown = 0;
     }
 
     player.level++;
+    if (gameDifficulty == GameDifficulty::Easy) {
+        player.hp = player.maxHp;
+    }
     if (currentLevel >= 3) {
         state = GameState::Victory;
     }
@@ -562,6 +823,13 @@ void playerAttack(Vec2 dir) {
     }
 }
 
+void playerShoot(Vec2 dir) {
+    if (player.shootCooldown > 0) return;
+    Vec2 spawn{ player.pos.x + dir.x * (player.radius + 8.0f), player.pos.y + dir.y * (player.radius + 8.0f) };
+    bullets.push_back(Bullet{ spawn, { dir.x * PLAYER_BULLET_SPEED, dir.y * PLAYER_BULLET_SPEED }, 4, true, playerBulletDamage(), true });
+    player.shootCooldown = playerShootCooldown();
+}
+
 void updatePlaying() {
     if (GetAsyncKeyState(VK_ESCAPE) & 0x0001) {
         previousState = state;
@@ -583,13 +851,13 @@ void updatePlaying() {
     move = normalize(move);
 
     float speed = player.speed;
-    if ((GetAsyncKeyState(VK_SPACE) & 0x8000) && player.dashEnergy >= 20 && (move.x != 0 || move.y != 0)) {
+    if ((GetAsyncKeyState(VK_SPACE) & 0x8000) && player.skillEnergy >= 20 && (move.x != 0 || move.y != 0)) {
         speed *= 2.2f;
-        player.dashEnergy -= 1.3f;
+        player.skillEnergy -= 1.3f;
         player.dashInvincible = 8;
     }
     else {
-        player.dashEnergy = std::min(100.0f, player.dashEnergy + 0.35f);
+        player.skillEnergy = std::min(MAX_SKILL_ENERGY, player.skillEnergy + 0.35f);
     }
     moveWithCollision(player.pos, player.radius, { move.x * speed, move.y * speed });
 
@@ -598,12 +866,14 @@ void updatePlaying() {
         playerAttack(aim);
     }
     mouseDownLast = mouseDown;
+    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) {
+        playerShoot(aim);
+    }
 
     if (player.attackCooldown > 0) player.attackCooldown -= 1;
+    if (player.shootCooldown > 0) player.shootCooldown -= 1;
     if (player.hurtCooldown > 0) player.hurtCooldown -= 1;
     if (player.dashInvincible > 0) player.dashInvincible -= 1;
-    if (comboTimer > 0) comboTimer -= 1;
-    else combo = 0;
 
     for (auto& slash : slashes) slash.life -= 1;
     slashes.erase(std::remove_if(slashes.begin(), slashes.end(), [](const Slash& s) { return s.life <= 0; }), slashes.end());
@@ -611,36 +881,48 @@ void updatePlaying() {
     for (auto& m : monsters) {
         Vec2 dir = normalize({ player.pos.x - m.pos.x, player.pos.y - m.pos.y });
         if (m.type == MonsterType::Chaser) {
-            moveWithCollision(m.pos, m.radius, { dir.x * m.speed, dir.y * m.speed });
+            Vec2 waypoint = chooseMonsterPathTarget(m.pos, m.radius, player.pos);
+            Vec2 moveDir = normalize({ waypoint.x - m.pos.x, waypoint.y - m.pos.y });
+            moveMonsterAvoidingWalls(m.pos, m.radius, moveDir, m.speed);
         }
         else if (m.type == MonsterType::Shooter) {
             float d = dist(m.pos, player.pos);
-            if (d < 180) moveWithCollision(m.pos, m.radius, { -dir.x * m.speed, -dir.y * m.speed });
-            else if (d > 300) moveWithCollision(m.pos, m.radius, { dir.x * m.speed * 0.6f, dir.y * m.speed * 0.6f });
+            if (!hasLineOfSight(m.pos, player.pos, m.radius)) {
+                Vec2 waypoint = chooseMonsterPathTarget(m.pos, m.radius, player.pos);
+                Vec2 moveDir = normalize({ waypoint.x - m.pos.x, waypoint.y - m.pos.y });
+                moveMonsterAvoidingWalls(m.pos, m.radius, moveDir, m.speed * 0.6f);
+            }
+            else if (d < 180) {
+                moveMonsterAvoidingWalls(m.pos, m.radius, { -dir.x, -dir.y }, m.speed);
+            }
 
             m.shootCooldown -= 1;
             if (m.shootCooldown <= 0) {
-                bullets.push_back(Bullet{ m.pos, { dir.x * 3.0f, dir.y * 3.0f }, 5, true });
-                m.shootCooldown = (float)(95 + rand() % 45);
+                bullets.push_back(Bullet{ m.pos, { dir.x * SHOOTER_BULLET_SPEED, dir.y * SHOOTER_BULLET_SPEED }, 5, true, MONSTER_DAMAGE });
+                m.shootCooldown = playerShootCooldown();
             }
         }
         else {
             float d = dist(m.pos, player.pos);
-            if (d > 150) moveWithCollision(m.pos, m.radius, { dir.x * m.speed, dir.y * m.speed });
-            else moveWithCollision(m.pos, m.radius, { -dir.y * m.speed * 0.7f, dir.x * m.speed * 0.7f });
+            if (d > 150) {
+                Vec2 waypoint = chooseMonsterPathTarget(m.pos, m.radius, player.pos);
+                Vec2 moveDir = normalize({ waypoint.x - m.pos.x, waypoint.y - m.pos.y });
+                moveMonsterAvoidingWalls(m.pos, m.radius, moveDir, m.speed);
+            }
+            else moveMonsterAvoidingWalls(m.pos, m.radius, { -dir.y, dir.x }, m.speed * 0.7f);
 
             m.shootCooldown -= 1;
             if (m.shootCooldown <= 0) {
                 Vec2 side{ -dir.y, dir.x };
-                bullets.push_back(Bullet{ m.pos, { dir.x * 3.4f, dir.y * 3.4f }, 6, true });
-                bullets.push_back(Bullet{ m.pos, { (dir.x + side.x * 0.32f) * 3.1f, (dir.y + side.y * 0.32f) * 3.1f }, 5, true });
-                bullets.push_back(Bullet{ m.pos, { (dir.x - side.x * 0.32f) * 3.1f, (dir.y - side.y * 0.32f) * 3.1f }, 5, true });
+                bullets.push_back(Bullet{ m.pos, { dir.x * 3.4f, dir.y * 3.4f }, 6, true, BOSS_DAMAGE });
+                bullets.push_back(Bullet{ m.pos, { (dir.x + side.x * 0.32f) * 3.1f, (dir.y + side.y * 0.32f) * 3.1f }, 5, true, BOSS_DAMAGE });
+                bullets.push_back(Bullet{ m.pos, { (dir.x - side.x * 0.32f) * 3.1f, (dir.y - side.y * 0.32f) * 3.1f }, 5, true, BOSS_DAMAGE });
                 m.shootCooldown = (float)(70 + rand() % 35);
             }
         }
 
         if (dist(m.pos, player.pos) < m.radius + player.radius && player.hurtCooldown <= 0 && player.dashInvincible <= 0) {
-            player.hp -= (m.type == MonsterType::Boss) ? 2 : 1;
+            player.hp -= m.touchDamage;
             player.hurtCooldown = 45;
             Vec2 push = normalize({ player.pos.x - m.pos.x, player.pos.y - m.pos.y });
             moveWithCollision(player.pos, player.radius, { push.x * 22, push.y * 22 });
@@ -652,9 +934,37 @@ void updatePlaying() {
         b.pos.x += b.vel.x;
         b.pos.y += b.vel.y;
         if (blocked(b.pos, b.radius)) b.alive = false;
-        if (dist(b.pos, player.pos) < b.radius + player.radius && player.hurtCooldown <= 0 && player.dashInvincible <= 0) {
+    }
+
+    for (size_t i = 0; i < bullets.size(); ++i) {
+        if (!bullets[i].alive || !bullets[i].fromPlayer) continue;
+
+        for (size_t j = 0; j < bullets.size(); ++j) {
+            if (i == j || !bullets[j].alive || bullets[j].fromPlayer) continue;
+            if (dist(bullets[i].pos, bullets[j].pos) < bullets[i].radius + bullets[j].radius) {
+                bullets[i].alive = false;
+                bullets[j].alive = false;
+                break;
+            }
+        }
+    }
+
+    for (auto& b : bullets) {
+        if (!b.alive) continue;
+
+        if (b.fromPlayer) {
+            for (auto& m : monsters) {
+                if (m.hp <= 0) continue;
+                if (dist(b.pos, m.pos) < b.radius + m.radius) {
+                    b.alive = false;
+                    m.hp -= b.damage;
+                    break;
+                }
+            }
+        }
+        else if (dist(b.pos, player.pos) < b.radius + player.radius && player.hurtCooldown <= 0 && player.dashInvincible <= 0) {
             b.alive = false;
-            player.hp -= 1;
+            player.hp -= (int)b.damage;
             player.hurtCooldown = 40;
         }
     }
@@ -663,27 +973,15 @@ void updatePlaying() {
         if (!s.alive) continue;
         if (dist(s.pos, player.pos) < s.radius + player.radius) {
             s.alive = false;
-            if (s.type == 0) player.hp = std::min(player.maxHp, player.hp + 2);
-            else player.dashEnergy = 100;
+            player.hp = std::min(player.maxHp, player.hp + SUPPLY_RECOVERY);
         }
     }
 
-    for (const auto& m : monsters) {
-        if (m.hp <= 0) {
-            int baseScore = 120;
-            if (m.type == MonsterType::Shooter) baseScore = 180;
-            if (m.type == MonsterType::Boss) baseScore = 600;
-            combo += 1;
-            comboTimer = 150;
-            score += baseScore * currentLevel + std::max(0, combo - 1) * 25;
-            defeatedCount += 1;
-        }
-    }
     monsters.erase(std::remove_if(monsters.begin(), monsters.end(), [](const Monster& m) { return m.hp <= 0; }), monsters.end());
     bullets.erase(std::remove_if(bullets.begin(), bullets.end(), [](const Bullet& b) { return !b.alive; }), bullets.end());
 
     if (player.hp <= 0) state = GameState::GameOver;
-    if (monsters.empty()) state = GameState::LevelClear;
+    if (monsters.empty()) state = (currentLevel >= 3) ? GameState::Victory : GameState::LevelClear;
 }
 
 void drawFrame() {
@@ -720,7 +1018,7 @@ void updateState() {
     else if (state == GameState::LevelClear) {
         if (GetAsyncKeyState('1') & 0x0001) applyUpgrade(1);
         if (GetAsyncKeyState('2') & 0x0001) applyUpgrade(2);
-        if (GetAsyncKeyState('3') & 0x0001) applyUpgrade(3);
+        if (currentLevel == 2 && (GetAsyncKeyState('3') & 0x0001)) applyUpgrade(3);
     }
     else if (state == GameState::Paused) {
         updatePauseMenu();

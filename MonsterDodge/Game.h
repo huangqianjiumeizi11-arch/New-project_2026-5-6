@@ -16,12 +16,9 @@ extern Player player;
 extern MusicManager musicManager;
 extern GameState state;
 extern GameState previousState;
+extern GameDifficulty gameDifficulty;
 extern int currentLevel;
-extern int defeatedCount;
 extern int selectedUpgrade;
-extern int score;
-extern int combo;
-extern int comboTimer;
 extern bool mouseDownLast;
 extern bool returnToStartMenuRequested;
 
