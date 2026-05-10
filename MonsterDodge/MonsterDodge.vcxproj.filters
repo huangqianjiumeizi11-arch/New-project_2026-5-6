@@ -12,6 +12,9 @@
     <Filter Include="第三方">
       <UniqueIdentifier>{D36E9B22-2C43-4D31-A9BA-4F2B7F04FA38}</UniqueIdentifier>
     </Filter>
+    <Filter Include="素材">
+      <UniqueIdentifier>{A2D2C8B1-7B41-49F4-A8E4-73AF149C16A1}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MonsterDodge.cpp">
@@ -37,5 +40,13 @@
     <ClInclude Include="third_party\miniaudio\miniaudio.h">
       <Filter>第三方</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="assets\player_apple.png">
+      <Filter>素材</Filter>
+    </Image>
+    <Image Include="assets\player_apple_48.png">
+      <Filter>素材</Filter>
+    </Image>
   </ItemGroup>
 </Project>

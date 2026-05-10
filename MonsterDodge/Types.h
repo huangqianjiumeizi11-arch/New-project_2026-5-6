@@ -55,6 +55,8 @@ struct Player {
     float shootCooldown = 0;
     float hurtCooldown = 0;
     float dashInvincible = 0;
+    float dashDuration = 14;
+    Vec2 dashDir{ 0, 0 };
     bool bulletUpgraded = false;
 };
 

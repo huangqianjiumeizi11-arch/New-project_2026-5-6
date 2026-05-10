@@ -24,3 +24,6 @@ x86/
 !MonsterDodge/Release/
 !MonsterDodge/Release/MonsterDodge.exe
 !MonsterDodge/Release/bgm.mp3
+!MonsterDodge/Release/assets/
+!MonsterDodge/Release/assets/player_apple.png
+!MonsterDodge/Release/assets/player_apple_48.png

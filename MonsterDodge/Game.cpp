@@ -4,13 +4,13 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string>
 Player player;
 MusicManager musicManager;
 GameState state = GameState::Menu;
-GameState previousState = GameState::Menu;
 int currentLevel = 1;
-int selectedUpgrade = 0;
 bool mouseDownLast = false;
+bool spaceDownLast = false;
 bool returnToStartMenuRequested = false;
 GameDifficulty gameDifficulty = GameDifficulty::Easy;
 
@@ -24,17 +24,34 @@ constexpr float MAX_SKILL_ENERGY = 100.0f;
 constexpr int SUPPLY_RECOVERY = 20;
 constexpr int MONSTER_DAMAGE = 10;
 constexpr int BOSS_DAMAGE = 20;
+constexpr int MELEE_HIT_INVINCIBLE_FRAMES = 10;
+constexpr float MELEE_KNOCKBACK = 22.0f;
+constexpr float DASH_ENERGY_COST = 20.0f;
+constexpr float DASH_ENERGY_RECOVERY = 0.35f;
+constexpr float DASH_SPEED_MULTIPLIER = 2.2f;
+constexpr float DASH_DURATION_UPGRADE_FRAMES = 4.0f;
 constexpr int PLAYER_SHOOT_COOLDOWN_MIN = 30;
 constexpr int PLAYER_SHOOT_COOLDOWN_RANGE = 11;
-constexpr int UPGRADED_PLAYER_SHOOT_COOLDOWN_MIN = 10;
+constexpr int UPGRADED_PLAYER_SHOOT_COOLDOWN_MIN = 20;
 constexpr int UPGRADED_PLAYER_SHOOT_COOLDOWN_RANGE = 6;
+constexpr int ENEMY_SHOOT_COOLDOWN_FRAMES = 25;
+constexpr int BOSS_SHOOT_COOLDOWN_FRAMES = 25;
+constexpr float BOSS_CHASE_DISTANCE = 110.0f;
+constexpr float BOSS_BULLET_SPEED = 3.4f;
+constexpr float BOSS_SPREAD_ANGLE = 30.0f;
+constexpr float BOSS_BULLET_RADIUS = 6.0f;
 constexpr float PLAYER_BULLET_SPEED = 7.0f;
 constexpr float PLAYER_BULLET_DAMAGE = 0.5f;
 constexpr float UPGRADED_PLAYER_BULLET_DAMAGE = 1.0f;
 constexpr float SHOOTER_BULLET_SPEED = 2.0f;
+constexpr int PLAYER_SPRITE_SIZE = 48;
 constexpr int PATH_CELL = 32;
 constexpr int PATH_COLS = SCREEN_W / PATH_CELL;
 constexpr int PATH_ROWS = SCREEN_H / PATH_CELL;
+
+IMAGE playerSprite;
+bool playerSpriteLoaded = false;
+bool playerSpriteLoadTried = false;
 
 float dist(Vec2 a, Vec2 b) {
     float dx = a.x - b.x;
@@ -287,6 +304,14 @@ float playerShootCooldown() {
     return (float)(PLAYER_SHOOT_COOLDOWN_MIN + rand() % PLAYER_SHOOT_COOLDOWN_RANGE);
 }
 
+float enemyShootCooldown() {
+    return (float)ENEMY_SHOOT_COOLDOWN_FRAMES;
+}
+
+float bossShootCooldown() {
+    return (float)BOSS_SHOOT_COOLDOWN_FRAMES;
+}
+
 float playerBulletDamage() {
     return player.bulletUpgraded ? UPGRADED_PLAYER_BULLET_DAMAGE : PLAYER_BULLET_DAMAGE;
 }
@@ -346,7 +371,7 @@ void addMonster(MonsterType type, float x, float y, float hp, float speed) {
     m.touchDamage = (type == MonsterType::Boss) ? BOSS_DAMAGE : MONSTER_DAMAGE;
     if (type == MonsterType::Boss) m.radius = 26.0f;
     else m.radius = (type == MonsterType::Shooter) ? 16.0f : 15.0f;
-    m.shootCooldown = (float)(60 + rand() % 60);
+    m.shootCooldown = enemyShootCooldown();
     monsters.push_back(m);
 }
 
@@ -359,7 +384,7 @@ void addHardLevel3Chaser(float x, float y, float speed) {
     m.speed = speed;
     m.touchDamage = 100;
     m.radius = 15.0f;
-    m.shootCooldown = (float)(60 + rand() % 60);
+    m.shootCooldown = enemyShootCooldown();
     monsters.push_back(m);
 }
 
@@ -370,7 +395,6 @@ void loadLevel(int level) {
     supplies.clear();
     bullets.clear();
     slashes.clear();
-    selectedUpgrade = 0;
 
     player.pos = { 90, 90 };
     player.skillEnergy = MAX_SKILL_ENERGY;
@@ -378,6 +402,8 @@ void loadLevel(int level) {
     player.shootCooldown = 0;
     player.hurtCooldown = 0;
     player.dashInvincible = 0;
+    player.dashDir = { 0, 0 };
+    spaceDownLast = false;
 
     if (level == 1) {
         walls.push_back({ 280, 120, 80, 260 });
@@ -404,11 +430,12 @@ void loadLevel(int level) {
         addLevelSupplies(level);
     }
     else {
-        walls.push_back({ 150, 125, 70, 390 });
-        walls.push_back({ 355, 95, 250, 55 });
-        walls.push_back({ 355, 490, 250, 55 });
-        walls.push_back({ 730, 125, 70, 390 });
-        walls.push_back({ 420, 250, 110, 130 });
+        walls.push_back({ 155, 145, 72, 340 });
+        walls.push_back({ 350, 92, 260, 52 });
+        walls.push_back({ 350, 496, 260, 52 });
+        walls.push_back({ 733, 145, 72, 340 });
+        walls.push_back({ 365, 260, 55, 120 });
+        walls.push_back({ 535, 260, 55, 120 });
         if (gameDifficulty == GameDifficulty::Hard) {
             addHardLevel3Chaser(825, 100, 1.70f);
             addHardLevel3Chaser(835, 535, 1.70f);
@@ -422,7 +449,7 @@ void loadLevel(int level) {
         addMonster(MonsterType::Shooter, 700, 320, 3, 1.05f);
         addMonster(MonsterType::Shooter, 300, 120, 3, 1.05f);
         addMonster(MonsterType::Shooter, 300, 520, 3, 1.05f);
-        addMonster(MonsterType::Boss, 830, 320, 10, 0.80f);
+        addMonster(MonsterType::Boss, 840, 320, 10, 0.80f);
         addLevelSupplies(level);
     }
 }
@@ -449,26 +476,275 @@ void drawBar(int x, int y, int w, int h, float value, float maxValue, COLORREF c
     setfillcolor(color);
     solidroundrect(x, y, x + (int)(w * rate), y + h, 6, 6);
 }
-void drawWorld() {
-    setbkcolor(RGB(24, 29, 34));
+
+bool localFileExists(const std::wstring& path) {
+    DWORD attributes = GetFileAttributes(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::wstring directoryOf(const std::wstring& path) {
+    size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return L"";
+    return path.substr(0, slash);
+}
+
+std::wstring parentDirectoryOf(const std::wstring& directory) {
+    if (directory.empty()) return L"";
+    std::wstring trimmed = directory;
+    while (!trimmed.empty() && (trimmed.back() == L'\\' || trimmed.back() == L'/')) trimmed.pop_back();
+    return directoryOf(trimmed);
+}
+
+std::wstring combinePath(const std::wstring& directory, const std::wstring& fileName) {
+    if (directory.empty()) return fileName;
+    if (directory.back() == L'\\' || directory.back() == L'/') return directory + fileName;
+    return directory + L"\\" + fileName;
+}
+
+void addPlayerSpriteCandidate(std::vector<std::wstring>& candidates, const std::wstring& directory) {
+    if (directory.empty()) return;
+    candidates.push_back(combinePath(combinePath(directory, L"assets"), L"player_apple.png"));
+}
+
+bool loadPlayerSprite() {
+    if (playerSpriteLoadTried) return playerSpriteLoaded;
+    playerSpriteLoadTried = true;
+
+    wchar_t exePath[MAX_PATH]{};
+    GetModuleFileName(nullptr, exePath, MAX_PATH);
+
+    wchar_t currentPath[MAX_PATH]{};
+    GetCurrentDirectory(MAX_PATH, currentPath);
+
+    std::wstring exeDir = directoryOf(exePath);
+    std::wstring currentDir = currentPath;
+    std::wstring exeParent = parentDirectoryOf(exeDir);
+    std::wstring currentMonsterDodgeDir = combinePath(currentDir, L"MonsterDodge");
+
+    std::vector<std::wstring> candidates;
+    addPlayerSpriteCandidate(candidates, currentDir);
+    addPlayerSpriteCandidate(candidates, currentMonsterDodgeDir);
+    addPlayerSpriteCandidate(candidates, exeDir);
+    addPlayerSpriteCandidate(candidates, exeParent);
+
+    for (const auto& candidate : candidates) {
+        if (!localFileExists(candidate)) continue;
+        loadimage(&playerSprite, candidate.c_str(), PLAYER_SPRITE_SIZE, PLAYER_SPRITE_SIZE, true);
+        playerSpriteLoaded = playerSprite.getwidth() > 0 && playerSprite.getheight() > 0;
+        if (playerSpriteLoaded) break;
+    }
+
+    return playerSpriteLoaded;
+}
+
+void drawAlphaImage(int x, int y, IMAGE* image) {
+    DWORD* src = GetImageBuffer(image);
+    DWORD* dst = GetImageBuffer();
+    int width = image->getwidth();
+    int height = image->getheight();
+
+    for (int sy = 0; sy < height; ++sy) {
+        int dy = y + sy;
+        if (dy < 0 || dy >= SCREEN_H) continue;
+
+        for (int sx = 0; sx < width; ++sx) {
+            int dx = x + sx;
+            if (dx < 0 || dx >= SCREEN_W) continue;
+
+            DWORD source = src[sy * width + sx];
+            int alpha = (source >> 24) & 0xff;
+            if (alpha <= 0) continue;
+
+            DWORD& target = dst[dy * SCREEN_W + dx];
+            if (alpha >= 255) {
+                target = RGB(GetRValue(source), GetGValue(source), GetBValue(source));
+                continue;
+            }
+
+            int invAlpha = 255 - alpha;
+            int r = (GetRValue(source) * alpha + GetRValue(target) * invAlpha) / 255;
+            int g = (GetGValue(source) * alpha + GetGValue(target) * invAlpha) / 255;
+            int b = (GetBValue(source) * alpha + GetBValue(target) * invAlpha) / 255;
+            target = RGB(r, g, b);
+        }
+    }
+}
+
+void drawPlayerSprite(Vec2 aim) {
+    setlinecolor(RGB(183, 244, 207));
+    setlinestyle(PS_SOLID, 2);
+    line((int)player.pos.x, (int)player.pos.y, (int)(player.pos.x + aim.x * 34), (int)(player.pos.y + aim.y * 34));
+    setlinestyle(PS_SOLID, 1);
+
+    if (player.dashInvincible > 0) {
+        setlinecolor(RGB(91, 214, 210));
+        setlinestyle(PS_SOLID, 3);
+        circle((int)player.pos.x, (int)player.pos.y, 29);
+        setlinestyle(PS_SOLID, 1);
+    }
+
+    if (loadPlayerSprite()) {
+        int x = (int)(player.pos.x - PLAYER_SPRITE_SIZE / 2);
+        int y = (int)(player.pos.y - PLAYER_SPRITE_SIZE / 2);
+        drawAlphaImage(x, y, &playerSprite);
+    }
+    else {
+        setfillcolor(player.dashInvincible > 0 ? RGB(91, 214, 210) : RGB(82, 184, 132));
+        solidcircle((int)player.pos.x, (int)player.pos.y, (int)player.radius);
+    }
+}
+
+void drawMechanicalFloor() {
+    setbkcolor(RGB(18, 23, 28));
     cleardevice();
 
-    setlinecolor(RGB(35, 42, 48));
-    for (int x = 0; x < SCREEN_W; x += 40) line(x, 0, x, SCREEN_H);
-    for (int y = 0; y < SCREEN_H; y += 40) line(0, y, SCREEN_W, y);
+    for (int y = 0; y < SCREEN_H; y += 80) {
+        for (int x = 0; x < SCREEN_W; x += 80) {
+            COLORREF fill = ((x / 80 + y / 80) % 2 == 0) ? RGB(27, 34, 41) : RGB(23, 29, 35);
+            setfillcolor(fill);
+            solidrectangle(x, y, x + 80, y + 80);
+            setlinecolor(RGB(42, 52, 60));
+            rectangle(x, y, x + 80, y + 80);
 
-    setfillcolor(RGB(94, 103, 110));
-    setlinecolor(RGB(122, 134, 143));
+            setfillcolor(RGB(68, 80, 90));
+            solidcircle(x + 10, y + 10, 2);
+            solidcircle(x + 70, y + 10, 2);
+            solidcircle(x + 10, y + 70, 2);
+            solidcircle(x + 70, y + 70, 2);
+        }
+    }
+
+    setlinecolor(RGB(33, 40, 47));
+    for (int x = -120; x < SCREEN_W; x += 160) {
+        line(x, SCREEN_H, x + 220, 0);
+    }
+
+    setlinestyle(PS_SOLID, 5);
+    setlinecolor(RGB(34, 111, 126));
+    roundrect(28, 28, SCREEN_W - 28, SCREEN_H - 28, 10, 10);
+    setlinestyle(PS_SOLID, 2);
+    setlinecolor(RGB(74, 214, 228));
+    roundrect(36, 36, SCREEN_W - 36, SCREEN_H - 36, 8, 8);
+
+    setlinestyle(PS_SOLID, 8);
+    setlinecolor(RGB(26, 74, 83));
+    line(95, 300, 230, 300);
+    line(230, 300, 230, 92);
+    line(230, 92, 420, 92);
+    line(540, 92, 710, 92);
+    line(710, 92, 710, 300);
+    line(710, 300, 865, 300);
+    line(95, 430, 330, 430);
+    line(330, 430, 330, 560);
+    line(330, 560, 440, 560);
+    line(520, 560, 640, 560);
+    line(640, 560, 640, 430);
+    line(640, 430, 865, 430);
+
+    setlinestyle(PS_SOLID, 2);
+    setlinecolor(RGB(73, 202, 215));
+    line(95, 300, 230, 300);
+    line(230, 300, 230, 92);
+    line(230, 92, 420, 92);
+    line(540, 92, 710, 92);
+    line(710, 92, 710, 300);
+    line(710, 300, 865, 300);
+    line(95, 430, 330, 430);
+    line(330, 430, 330, 560);
+    line(330, 560, 440, 560);
+    line(520, 560, 640, 560);
+    line(640, 560, 640, 430);
+    line(640, 430, 865, 430);
+
+    setlinestyle(PS_SOLID, 1);
+}
+
+void drawHazardBand(int x1, int y1, int x2, int y2, bool horizontal) {
+    setfillcolor(RGB(34, 32, 27));
+    solidrectangle(x1, y1, x2, y2);
+
+    setlinestyle(PS_SOLID, 4);
+    setlinecolor(RGB(220, 176, 48));
+    if (horizontal) {
+        for (int x = x1 - 8; x < x2; x += 22) {
+            line(x, y2, x + 12, y1);
+        }
+    }
+    else {
+        for (int y = y1 - 8; y < y2; y += 22) {
+            line(x1, y + 12, x2, y);
+        }
+    }
+    setlinestyle(PS_SOLID, 1);
+}
+
+void drawMechanicalWall(const RectF& wall) {
+    int x1 = (int)wall.x;
+    int y1 = (int)wall.y;
+    int x2 = (int)(wall.x + wall.w);
+    int y2 = (int)(wall.y + wall.h);
+
+    setfillcolor(RGB(10, 13, 16));
+    solidroundrect(x1 + 5, y1 + 7, x2 + 5, y2 + 7, 8, 8);
+
+    setfillcolor(RGB(78, 87, 96));
+    setlinecolor(RGB(142, 155, 165));
+    solidroundrect(x1, y1, x2, y2, 8, 8);
+    roundrect(x1, y1, x2, y2, 8, 8);
+
+    setfillcolor(RGB(60, 70, 79));
+    setlinecolor(RGB(100, 114, 125));
+    solidroundrect(x1 + 8, y1 + 8, x2 - 8, y2 - 8, 5, 5);
+    roundrect(x1 + 8, y1 + 8, x2 - 8, y2 - 8, 5, 5);
+
+    if (wall.w >= wall.h) {
+        drawHazardBand(x1 + 8, y1 + 6, x2 - 8, y1 + 14, true);
+        drawHazardBand(x1 + 8, y2 - 14, x2 - 8, y2 - 6, true);
+    }
+    else {
+        drawHazardBand(x1 + 6, y1 + 8, x1 + 14, y2 - 8, false);
+        drawHazardBand(x2 - 14, y1 + 8, x2 - 6, y2 - 8, false);
+    }
+
+    setfillcolor(RGB(168, 180, 188));
+    setlinecolor(RGB(38, 44, 50));
+    solidcircle(x1 + 14, y1 + 14, 3);
+    solidcircle(x2 - 14, y1 + 14, 3);
+    solidcircle(x1 + 14, y2 - 14, 3);
+    solidcircle(x2 - 14, y2 - 14, 3);
+}
+
+void drawHealthSupply(const Supply& supply) {
+    int x = (int)supply.pos.x;
+    int y = (int)supply.pos.y;
+
+    setfillcolor(RGB(13, 16, 19));
+    solidroundrect(x - 20, y - 16, x + 22, y + 18, 7, 7);
+    setfillcolor(RGB(83, 45, 48));
+    setlinecolor(RGB(170, 72, 74));
+    solidroundrect(x - 22, y - 18, x + 20, y + 16, 7, 7);
+    roundrect(x - 22, y - 18, x + 20, y + 16, 7, 7);
+
+    setfillcolor(RGB(220, 75, 75));
+    setlinecolor(RGB(255, 190, 190));
+    solidroundrect(x - 13, y - 11, x + 11, y + 11, 4, 4);
+    roundrect(x - 13, y - 11, x + 11, y + 11, 4, 4);
+
+    setfillcolor(RGB(248, 248, 248));
+    solidrectangle(x - 4, y - 9, x + 2, y + 9);
+    solidrectangle(x - 10, y - 3, x + 8, y + 3);
+}
+
+void drawWorld() {
+    drawMechanicalFloor();
+
     for (const auto& wall : walls) {
-        solidroundrect((int)wall.x, (int)wall.y, (int)(wall.x + wall.w), (int)(wall.y + wall.h), 8, 8);
+        drawMechanicalWall(wall);
     }
 
     for (const auto& s : supplies) {
         if (!s.alive) continue;
-        setfillcolor(RGB(226, 85, 85));
-        solidcircle((int)s.pos.x, (int)s.pos.y, (int)s.radius);
-        setlinecolor(RGB(255, 255, 255));
-        circle((int)s.pos.x, (int)s.pos.y, (int)s.radius);
+        drawHealthSupply(s);
     }
 
     for (const auto& b : bullets) {
@@ -513,10 +789,7 @@ void drawWorld() {
     GetCursorPos(&mouse);
     ScreenToClient(GetHWnd(), &mouse);
     Vec2 aim = normalize({ (float)mouse.x - player.pos.x, (float)mouse.y - player.pos.y });
-    setfillcolor(player.dashInvincible > 0 ? RGB(91, 214, 210) : RGB(82, 184, 132));
-    solidcircle((int)player.pos.x, (int)player.pos.y, (int)player.radius);
-    setlinecolor(RGB(183, 244, 207));
-    line((int)player.pos.x, (int)player.pos.y, (int)(player.pos.x + aim.x * 28), (int)(player.pos.y + aim.y * 28));
+    drawPlayerSprite(aim);
 
     drawBar(18, 16, 180, 14, (float)player.hp, (float)player.maxHp, RGB(222, 78, 78));
     drawBar(18, 38, 180, 10, player.skillEnergy, MAX_SKILL_ENERGY, RGB(238, 190, 65));
@@ -536,16 +809,6 @@ void drawWorld() {
     wchar_t skillInfo[64];
     swprintf_s(skillInfo, L"技力 %.0f / %.0f", player.skillEnergy, MAX_SKILL_ENERGY);
     outtextxy(20, 33, skillInfo);
-}
-
-void drawMenu() {
-    setbkcolor(RGB(23, 28, 34));
-    cleardevice();
-    drawCenteredText(140, L"MonsterDodge", 52, RGB(236, 241, 245));
-    drawCenteredText(205, L"闪避、拉扯、反击，活过三关", 24, RGB(103, 211, 151));
-    drawCenteredText(250, L"WASD 移动，鼠标瞄准，左键攻击，空格冲刺", 22, RGB(197, 207, 215));
-    drawCenteredText(290, L"前两关清空怪物后选择升级，第三关会出现 Boss", 22, RGB(197, 207, 215));
-    drawCenteredText(365, L"按 Enter 开始", 28, RGB(103, 211, 151));
 }
 
 void drawOverlay(const wchar_t* title, const wchar_t* tip) {
@@ -771,13 +1034,13 @@ void updatePauseMenu() {
 
 void drawUpgrade() {
     drawWorld();
-    drawOverlay(L"关卡完成", currentLevel == 2 ? L"选择一项升级：1 攻击  2 速度  3 子弹" : L"选择一项升级：1 攻击  2 速度");
+    drawOverlay(L"关卡完成", currentLevel == 2 ? L"选择一项升级：1 攻击  2 延长闪避时间  3 子弹强化" : L"选择一项升级：1 攻击  2 延长闪避时间");
     settextstyle(20, 0, L"Microsoft YaHei");
     settextcolor(RGB(215, 224, 230));
     outtextxy(365, 370, L"1. 攻击力 +1");
-    outtextxy(365, 405, L"2. 移动速度 +8%");
+    outtextxy(365, 405, L"2. 延长闪避时间 +4 帧");
     if (currentLevel == 2) {
-        outtextxy(365, 440, L"3. 子弹伤害 1，间隔 10-15 帧");
+        outtextxy(365, 440, L"3. 子弹伤害 1，间隔 20-25 帧");
     }
 }
 
@@ -786,7 +1049,7 @@ void applyUpgrade(int choice) {
         player.attack += 1;
     }
     else if (choice == 2) {
-        player.speed *= 1.08f;
+        player.dashDuration += DASH_DURATION_UPGRADE_FRAMES;
     }
     else if (choice == 3 && currentLevel == 2) {
         player.bulletUpgraded = true;
@@ -811,15 +1074,21 @@ void playerAttack(Vec2 dir) {
     player.attackCooldown = 22;
     slashes.push_back(Slash{ player.pos, dir, 8 });
 
+    bool hitMonster = false;
     for (auto& m : monsters) {
         Vec2 toMonster{ m.pos.x - player.pos.x, m.pos.y - player.pos.y };
         float d = sqrtf(toMonster.x * toMonster.x + toMonster.y * toMonster.y);
         Vec2 toward = normalize(toMonster);
         if (d <= 78 && dot(toward, dir) > 0.35f) {
+            hitMonster = true;
             m.hp -= player.attack;
             Vec2 knock = normalize({ m.pos.x - player.pos.x, m.pos.y - player.pos.y });
-            moveWithCollision(m.pos, m.radius, { knock.x * 14, knock.y * 14 });
+            moveWithCollision(m.pos, m.radius, { knock.x * MELEE_KNOCKBACK, knock.y * MELEE_KNOCKBACK });
         }
+    }
+
+    if (hitMonster) {
+        player.hurtCooldown = std::max(player.hurtCooldown, (float)MELEE_HIT_INVINCIBLE_FRAMES);
     }
 }
 
@@ -832,7 +1101,6 @@ void playerShoot(Vec2 dir) {
 
 void updatePlaying() {
     if (GetAsyncKeyState(VK_ESCAPE) & 0x0001) {
-        previousState = state;
         state = GameState::Paused;
         return;
     }
@@ -850,14 +1118,21 @@ void updatePlaying() {
     if (GetAsyncKeyState('D') & 0x8000) move.x += 1;
     move = normalize(move);
 
+    bool spaceDown = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+    if (spaceDown && !spaceDownLast && player.dashInvincible <= 0 && player.skillEnergy >= DASH_ENERGY_COST && (move.x != 0 || move.y != 0)) {
+        player.skillEnergy -= DASH_ENERGY_COST;
+        player.dashInvincible = player.dashDuration;
+        player.dashDir = move;
+    }
+    spaceDownLast = spaceDown;
+
     float speed = player.speed;
-    if ((GetAsyncKeyState(VK_SPACE) & 0x8000) && player.skillEnergy >= 20 && (move.x != 0 || move.y != 0)) {
-        speed *= 2.2f;
-        player.skillEnergy -= 1.3f;
-        player.dashInvincible = 8;
+    if (player.dashInvincible > 0) {
+        speed *= DASH_SPEED_MULTIPLIER;
+        move = player.dashDir;
     }
     else {
-        player.skillEnergy = std::min(MAX_SKILL_ENERGY, player.skillEnergy + 0.35f);
+        player.skillEnergy = std::min(MAX_SKILL_ENERGY, player.skillEnergy + DASH_ENERGY_RECOVERY);
     }
     moveWithCollision(player.pos, player.radius, { move.x * speed, move.y * speed });
 
@@ -899,12 +1174,12 @@ void updatePlaying() {
             m.shootCooldown -= 1;
             if (m.shootCooldown <= 0) {
                 bullets.push_back(Bullet{ m.pos, { dir.x * SHOOTER_BULLET_SPEED, dir.y * SHOOTER_BULLET_SPEED }, 5, true, MONSTER_DAMAGE });
-                m.shootCooldown = playerShootCooldown();
+                m.shootCooldown = enemyShootCooldown();
             }
         }
         else {
             float d = dist(m.pos, player.pos);
-            if (d > 150) {
+            if (d > BOSS_CHASE_DISTANCE) {
                 Vec2 waypoint = chooseMonsterPathTarget(m.pos, m.radius, player.pos);
                 Vec2 moveDir = normalize({ waypoint.x - m.pos.x, waypoint.y - m.pos.y });
                 moveMonsterAvoidingWalls(m.pos, m.radius, moveDir, m.speed);
@@ -913,11 +1188,14 @@ void updatePlaying() {
 
             m.shootCooldown -= 1;
             if (m.shootCooldown <= 0) {
-                Vec2 side{ -dir.y, dir.x };
-                bullets.push_back(Bullet{ m.pos, { dir.x * 3.4f, dir.y * 3.4f }, 6, true, BOSS_DAMAGE });
-                bullets.push_back(Bullet{ m.pos, { (dir.x + side.x * 0.32f) * 3.1f, (dir.y + side.y * 0.32f) * 3.1f }, 5, true, BOSS_DAMAGE });
-                bullets.push_back(Bullet{ m.pos, { (dir.x - side.x * 0.32f) * 3.1f, (dir.y - side.y * 0.32f) * 3.1f }, 5, true, BOSS_DAMAGE });
-                m.shootCooldown = (float)(70 + rand() % 35);
+                Vec2 shotDir = dir;
+                if (shotDir.x == 0 && shotDir.y == 0) shotDir = { 1, 0 };
+                Vec2 left = normalize(rotate(shotDir, -BOSS_SPREAD_ANGLE));
+                Vec2 right = normalize(rotate(shotDir, BOSS_SPREAD_ANGLE));
+                bullets.push_back(Bullet{ m.pos, { shotDir.x * BOSS_BULLET_SPEED, shotDir.y * BOSS_BULLET_SPEED }, BOSS_BULLET_RADIUS, true, BOSS_DAMAGE });
+                bullets.push_back(Bullet{ m.pos, { left.x * BOSS_BULLET_SPEED, left.y * BOSS_BULLET_SPEED }, BOSS_BULLET_RADIUS, true, BOSS_DAMAGE });
+                bullets.push_back(Bullet{ m.pos, { right.x * BOSS_BULLET_SPEED, right.y * BOSS_BULLET_SPEED }, BOSS_BULLET_RADIUS, true, BOSS_DAMAGE });
+                m.shootCooldown = bossShootCooldown();
             }
         }
 
@@ -985,10 +1263,7 @@ void updatePlaying() {
 }
 
 void drawFrame() {
-    if (state == GameState::Menu) {
-        drawMenu();
-    }
-    else if (state == GameState::Playing) {
+    if (state == GameState::Playing) {
         drawWorld();
     }
     else if (state == GameState::LevelClear) {
@@ -1009,10 +1284,7 @@ void drawFrame() {
 }
 
 void updateState() {
-    if (state == GameState::Menu) {
-        if (GetAsyncKeyState(VK_RETURN) & 0x0001) startGame();
-    }
-    else if (state == GameState::Playing) {
+    if (state == GameState::Playing) {
         updatePlaying();
     }
     else if (state == GameState::LevelClear) {

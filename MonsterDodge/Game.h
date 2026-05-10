@@ -15,10 +15,8 @@
 extern Player player;
 extern MusicManager musicManager;
 extern GameState state;
-extern GameState previousState;
 extern GameDifficulty gameDifficulty;
 extern int currentLevel;
-extern int selectedUpgrade;
 extern bool mouseDownLast;
 extern bool returnToStartMenuRequested;
 
