@@ -84,6 +84,7 @@
     <ClInclude Include="third_party\miniaudio\miniaudio.h" />
   </ItemGroup>
   <ItemGroup>
+    <Image Include="assets\init_background.png" />
     <Image Include="assets\player_apple.png" />
     <Image Include="assets\player_apple_48.png" />
   </ItemGroup>

@@ -42,6 +42,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <Image Include="assets\init_background.png">
+      <Filter>素材</Filter>
+    </Image>
     <Image Include="assets\player_apple.png">
       <Filter>素材</Filter>
     </Image>

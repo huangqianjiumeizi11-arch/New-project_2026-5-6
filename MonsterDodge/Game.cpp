@@ -52,6 +52,9 @@ constexpr int PATH_ROWS = SCREEN_H / PATH_CELL;
 IMAGE playerSprite;
 bool playerSpriteLoaded = false;
 bool playerSpriteLoadTried = false;
+IMAGE startBackground;
+bool startBackgroundLoaded = false;
+bool startBackgroundLoadTried = false;
 
 float dist(Vec2 a, Vec2 b) {
     float dx = a.x - b.x;
@@ -506,6 +509,11 @@ void addPlayerSpriteCandidate(std::vector<std::wstring>& candidates, const std::
     candidates.push_back(combinePath(combinePath(directory, L"assets"), L"player_apple.png"));
 }
 
+void addStartBackgroundCandidate(std::vector<std::wstring>& candidates, const std::wstring& directory) {
+    if (directory.empty()) return;
+    candidates.push_back(combinePath(combinePath(directory, L"assets"), L"init_background.png"));
+}
+
 bool loadPlayerSprite() {
     if (playerSpriteLoadTried) return playerSpriteLoaded;
     playerSpriteLoadTried = true;
@@ -535,6 +543,37 @@ bool loadPlayerSprite() {
     }
 
     return playerSpriteLoaded;
+}
+
+bool loadStartBackground() {
+    if (startBackgroundLoadTried) return startBackgroundLoaded;
+    startBackgroundLoadTried = true;
+
+    wchar_t exePath[MAX_PATH]{};
+    GetModuleFileName(nullptr, exePath, MAX_PATH);
+
+    wchar_t currentPath[MAX_PATH]{};
+    GetCurrentDirectory(MAX_PATH, currentPath);
+
+    std::wstring exeDir = directoryOf(exePath);
+    std::wstring currentDir = currentPath;
+    std::wstring exeParent = parentDirectoryOf(exeDir);
+    std::wstring currentMonsterDodgeDir = combinePath(currentDir, L"MonsterDodge");
+
+    std::vector<std::wstring> candidates;
+    addStartBackgroundCandidate(candidates, currentDir);
+    addStartBackgroundCandidate(candidates, currentMonsterDodgeDir);
+    addStartBackgroundCandidate(candidates, exeDir);
+    addStartBackgroundCandidate(candidates, exeParent);
+
+    for (const auto& candidate : candidates) {
+        if (!localFileExists(candidate)) continue;
+        loadimage(&startBackground, candidate.c_str(), SCREEN_W, SCREEN_H, true);
+        startBackgroundLoaded = startBackground.getwidth() > 0 && startBackground.getheight() > 0;
+        if (startBackgroundLoaded) break;
+    }
+
+    return startBackgroundLoaded;
 }
 
 void drawAlphaImage(int x, int y, IMAGE* image) {
@@ -848,13 +887,18 @@ POINT getClientMouse() {
 }
 
 void drawStartBackground(const wchar_t* title, const wchar_t* subtitle) {
-    setbkcolor(RGB(23, 28, 34));
-    cleardevice();
-    setlinecolor(RGB(35, 42, 48));
-    for (int x = 0; x < SCREEN_W; x += 40) line(x, 0, x, SCREEN_H);
-    for (int y = 0; y < SCREEN_H; y += 40) line(0, y, SCREEN_W, y);
+    if (loadStartBackground()) {
+        putimage(0, 0, &startBackground);
+    }
+    else {
+        setbkcolor(RGB(23, 28, 34));
+        cleardevice();
+        setlinecolor(RGB(35, 42, 48));
+        for (int x = 0; x < SCREEN_W; x += 40) line(x, 0, x, SCREEN_H);
+        for (int y = 0; y < SCREEN_H; y += 40) line(0, y, SCREEN_W, y);
+    }
 
-    drawCenteredText(82, L"MonsterDodge", 50, RGB(236, 241, 245));
+    drawCenteredText(82, L"能天使的大冒险", 50, RGB(236, 241, 245));
     drawCenteredText(142, title, 28, RGB(103, 211, 151));
     if (subtitle != nullptr) drawCenteredText(178, subtitle, 18, RGB(197, 207, 215));
 }
@@ -867,7 +911,7 @@ int getHoveredButton(const std::vector<RectF>& buttons, POINT mouse) {
 }
 
 void drawMainMenu(POINT mouse) {
-    drawStartBackground(L"主菜单", L"闪避、拉扯、反击，活过三关");
+    drawStartBackground(L"主菜单", nullptr);
     std::vector<RectF> buttons{
         { 360, 238, 240, 48 },
         { 360, 302, 240, 48 },

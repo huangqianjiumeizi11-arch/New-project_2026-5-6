@@ -6,7 +6,7 @@
 int main() {
     srand((unsigned int)time(nullptr));
     initgraph(SCREEN_W, SCREEN_H);
-    SetWindowText(GetHWnd(), L"MonsterDodge - EasyX 小游戏");
+    SetWindowText(GetHWnd(), L"能天使的大冒险");
     BeginBatchDraw();
 
     if (!ShowStartMenu()) {
